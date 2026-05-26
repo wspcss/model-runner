@@ -1,0 +1,16 @@
+# MLX-VLM (01_mlx_vlm.py)
+mlx-vlm
+
+# HuggingFace Transformers (03_transformers.py)
+transformers
+accelerate
+torch
+torchvision
+pillow
+qwen-vl-utils
+
+# llama.cpp (04_llamacpp.py) — Metal backend auto-detected on macOS
+llama-cpp-python
+
+# Model download utility (for 04_llamacpp.py GGUF files)
+huggingface_hub[cli]

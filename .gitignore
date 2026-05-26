@@ -1,0 +1,8 @@
+.venv/
+.cache/
+.claude/
+__pycache__/
+*.gguf
+*.safetensors
+test.jpg
+.DS_Store
