@@ -12,5 +12,8 @@ qwen-vl-utils
 # llama.cpp (04_llamacpp.py) — Metal backend auto-detected on macOS
 llama-cpp-python
 
+# LM Studio (05_lmstudio.py) — OpenAI-compatible local API
+openai
+
 # Model download utility (for 04_llamacpp.py GGUF files)
 huggingface_hub[cli]
