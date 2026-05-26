@@ -6,3 +6,4 @@ __pycache__/
 *.safetensors
 test.jpg
 .DS_Store
+output/

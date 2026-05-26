@@ -1,0 +1,8 @@
+[
+  {
+    "question": "What is in this image? Describe it in detail.",
+    "grounded_answer": "",
+    "image": "test.jpg",
+    "category": "description"
+  }
+]

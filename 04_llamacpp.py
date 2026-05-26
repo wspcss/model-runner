@@ -18,7 +18,6 @@ import shutil
 import sys
 import os
 
-MODEL_GGUF  = "Qwen3VL-4B-Instruct-Q4_K_M.gguf"
 MMPROJ_GGUF = "mmproj-Qwen3VL-4B-Instruct-F16.gguf"
 IMAGE       = "test.jpg"
 PROMPT      = "What is in this image? Describe it in detail."
