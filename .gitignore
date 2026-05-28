@@ -7,3 +7,4 @@ __pycache__/
 test.jpg
 .DS_Store
 output/
+.env

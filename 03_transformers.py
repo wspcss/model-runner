@@ -3,8 +3,12 @@
 # INSTALL:
 #   pip install transformers accelerate torch pillow qwen-vl-utils
 #
-# MODEL: Downloaded automatically on first run (~8GB, bfloat16)
+# MODEL: Downloaded automatically on first run (~8 GB, bfloat16)
 #   Qwen/Qwen3-VL-4B-Instruct
+#
+# NOTE: 4-bit quantization in Transformers on Apple Silicon MPS has no working
+#   public path — bitsandbytes falls back to CPU, torchao requires a private
+#   Apple framework (mslk). BF16 on MPS is the correct choice here.
 #
 # RUN:
 #   python 03_transformers.py
@@ -21,7 +25,7 @@ print(f"Loading {MODEL} ...")
 model = AutoModelForImageTextToText.from_pretrained(
     MODEL,
     torch_dtype=torch.bfloat16,
-    device_map="auto",          # uses MPS (Metal) automatically on Apple Silicon
+    device_map="auto",
 )
 processor = AutoProcessor.from_pretrained(MODEL)
 
@@ -45,7 +49,7 @@ inputs = processor(
 
 print("Generating response ...\n")
 with torch.inference_mode():
-    output_ids = model.generate(**inputs, max_new_tokens=512)
+    output_ids = model.generate(**inputs, max_new_tokens=1024)
 
 # Decode only the newly generated tokens
 generated = output_ids[:, inputs["input_ids"].shape[1]:]

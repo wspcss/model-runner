@@ -19,7 +19,7 @@ import shutil
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-JUDGE_MODEL = "openai/gpt-5.4"
+JUDGE_MODEL = "deepseek/deepseek-v4-flash"
 
 LOCAL_BACKENDS_FILE = "local_backends.json"
 TEST_CASES_FILE = "test_case.json"
@@ -67,7 +67,7 @@ def call_openrouter(model, messages, max_tokens):
     )
     start = time.time()
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=60) as resp:
             body = resp.read().decode("utf-8")
             response_data = json.loads(body)
     except urllib.error.HTTPError as e:
@@ -136,6 +136,7 @@ def _run_mlx_inference(cfg, model, processor, image_path, question, max_tokens):
 
 def _run_ollama_inference(cfg, image_path, question, max_tokens):
     import urllib.request
+    import urllib.error
 
     with open(image_path, "rb") as f:
         image_b64 = base64.b64encode(f.read()).decode()
@@ -154,8 +155,12 @@ def _run_ollama_inference(cfg, image_path, question, max_tokens):
         headers={"Content-Type": "application/json"},
     )
     start = time.time()
-    with urllib.request.urlopen(req) as resp:
-        result = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8") if e.fp else ""
+        raise RuntimeError(f"Ollama API error {e.code}: {error_body}")
     elapsed = time.time() - start
 
     eval_count = result.get("eval_count", 0)
@@ -253,7 +258,10 @@ def _run_llamacpp_inference(cfg, image_path, question, max_tokens):
         "--single-turn",
     ]
     start = time.time()
-    result = subprocess.run(cmd, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    try:
+        result = subprocess.run(cmd, text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=300)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("llama-cli timed out after 300s")
     elapsed = time.time() - start
 
     if result.returncode != 0:
@@ -317,7 +325,7 @@ def _run_lmstudio_inference(cfg, image_path, question, max_tokens):
     mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
 
     endpoint = cfg.get("endpoint", "http://localhost:1234")
-    client = OpenAI(base_url=f"{endpoint}/v1", api_key="lm-studio")
+    client = OpenAI(base_url=f"{endpoint}/v1", api_key="lm-studio", timeout=300)
 
     start = time.time()
     response = client.chat.completions.create(
@@ -546,10 +554,50 @@ def run_benchmark(backend_config, tests, max_tokens):
 
 # ── HTML report ───────────────────────────────────────────────────────────────
 
-def generate_html_report(summaries, output_path):
+def generate_html_report(summaries, output_path, all_runs=None):
     import html
 
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    # ── Multi-run speed table ─────────────────────────────────────────────────
+    multi_run_section = ""
+    if all_runs and len(all_runs) > 1:
+        n_runs = len(all_runs)
+        run_headers = "".join(f"<th>Run {i+1} Time</th>" for i in range(n_runs))
+        multi_rows = ""
+        for backend in summaries:
+            name = backend["model"]
+            per_run_time = []
+            for run in all_runs:
+                match = next((b for b in run if b["model"] == name), None)
+                per_run_time.append(match.get("avg_per_case_s") if match else None)
+
+            run_cells = ""
+            for t in per_run_time:
+                run_cells += f"<td>{t:.2f}s</td>" if t is not None else "<td>N/A</td>"
+
+            valid_times = [t for t in per_run_time if t is not None]
+            avg_time = sum(valid_times) / len(valid_times) if valid_times else None
+            avg_time_cell = f"<strong>{avg_time:.2f}s</strong>" if avg_time is not None else "N/A"
+
+            multi_rows += f"""
+            <tr>
+              <td>{html.escape(name)}</td>
+              {run_cells}
+              <td>{avg_time_cell}</td>
+            </tr>"""
+
+        multi_run_section = f"""
+    <div class="comparison">
+      <h2>Multi-Run Time ({n_runs} runs)</h2>
+      <table>
+        <thead>
+          <tr><th>Backend</th>{run_headers}<th>Avg Time</th></tr>
+        </thead>
+        <tbody>{multi_rows}
+        </tbody>
+      </table>
+    </div>"""
 
     comparison_rows = ""
     for s in summaries:
@@ -691,8 +739,10 @@ def generate_html_report(summaries, output_path):
     <h1>⚡ Backend Benchmark Results</h1>
     <p class="timestamp">Generated: {timestamp} | Backends: {len(summaries)} | Judge: {html.escape(JUDGE_MODEL)}</p>
 
+    {multi_run_section}
+
     <div class="comparison">
-      <h2>Backend Comparison</h2>
+      <h2>Backend Comparison (last run)</h2>
       <table>
         <thead>
           <tr><th>Backend</th><th>Type</th><th>Avg TPS</th><th>Avg/Case</th><th>Avg Score</th><th>Avg Peak Mem</th><th>Tokens In</th><th>Tokens Out</th></tr>
@@ -727,6 +777,8 @@ def main():
                         help="OpenRouter API key for judge scoring (overrides env var)")
     parser.add_argument("--judge-model", type=str, default=JUDGE_MODEL,
                         help=f"Model to use for judge scoring (default: {JUDGE_MODEL})")
+    parser.add_argument("--runs", type=int, default=1,
+                        help="Number of times to run each backend (averages reported in HTML)")
     args = parser.parse_args()
 
     if args.api_key:
@@ -765,23 +817,34 @@ def main():
     print("  BACKEND BENCHMARK SUITE")
     print(f"  Backends:   {len(backends)}")
     print(f"  Test cases: {len(tests)}")
+    print(f"  Runs:       {args.runs}")
     print(f"  Max tokens: {args.max_tokens}")
     print(f"  Judge:      {JUDGE_MODEL} (via OpenRouter)")
     print("=" * 70)
 
-    summaries = []
+    all_run_summaries = []  # [run_idx][backend_idx]
     failed = []
 
-    for backend_config in backends:
-        print(f"\n{'─' * 70}")
-        print(f"  Backend: {backend_config['name']} ({backend_config['type']})")
-        print(f"{'─' * 70}")
-        try:
-            summary = run_benchmark(backend_config, tests, args.max_tokens)
-            summaries.append(summary)
-        except Exception as e:
-            print(f"\n  ❌ FAILED: {backend_config['name']}: {e}")
-            failed.append(backend_config["name"])
+    for run_idx in range(args.runs):
+        if args.runs > 1:
+            print(f"\n{'═' * 70}")
+            print(f"  RUN {run_idx + 1} of {args.runs}")
+            print(f"{'═' * 70}")
+        run_summaries = []
+        for backend_config in backends:
+            print(f"\n{'─' * 70}")
+            print(f"  Backend: {backend_config['name']} ({backend_config['type']})")
+            print(f"{'─' * 70}")
+            try:
+                summary = run_benchmark(backend_config, tests, args.max_tokens)
+                run_summaries.append(summary)
+            except Exception as e:
+                print(f"\n  ❌ FAILED: {backend_config['name']}: {e}")
+                if backend_config["name"] not in failed:
+                    failed.append(backend_config["name"])
+        all_run_summaries.append(run_summaries)
+
+    summaries = all_run_summaries[-1]
 
     if failed:
         print(f"\n⚠️  {len(failed)} backend(s) failed:")
@@ -810,11 +873,11 @@ def main():
 
     json_output = os.path.join(output_dir, f"backend_results_{label}_{timestamp}.json")
     with open(json_output, "w") as f:
-        json.dump(summaries, f, indent=2)
+        json.dump(all_run_summaries if args.runs > 1 else summaries, f, indent=2)
     print(f"\nResults saved to: {json_output}")
 
     html_output = os.path.join(output_dir, f"backend_results_{label}_{timestamp}.html")
-    generate_html_report(summaries, html_output)
+    generate_html_report(summaries, html_output, all_runs=all_run_summaries if args.runs > 1 else None)
     print(f"HTML report saved to: {html_output}")
 
     print("\n" + "=" * 70)
